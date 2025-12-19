@@ -10,8 +10,11 @@ function SignPage() {
   const [status, setStatus] = useState(null);
   const navigate = useNavigate();
 
+  const clientId = import.meta.env.VITE_DROPBOX_SIGN_CLIENT_ID || "18cf67e16badba297d5924f7f457477d";
+  console.log("Using Client ID:", clientId);
+
   const client = new HelloSign({
-    clientId: import.meta.env.VITE_DROPBOX_SIGN_CLIENT_ID || "YOUR_CLIENT_ID"
+    clientId: clientId
   });
 
   useEffect(() => {
