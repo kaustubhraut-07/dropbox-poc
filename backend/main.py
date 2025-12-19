@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import shutil
+import json
 
 # ✅ Import SDK models DIRECTLY from dropbox_sign
 from dropbox_sign import (
@@ -112,7 +113,19 @@ def upload_pdf(file: UploadFile = File(...)):
 # Webhook
 # -------------------------------
 @app.post("/webhook")
-def webhook(event: dict):
-    print("Webhook received:", event)
-    return {"status": "ok"}
+async def webhook(json_data: str = Form(None, alias="json")):
+    try:
+        if not json_data:
+            return "HelloSign Will Use This URL"
+
+        event_data = json.loads(json_data)
+        event_type = event_data.get("event", {}).get("event_type")
+        print(f"🔔 Webhook received: {event_type}")
+        
+        # Dropbox Sign requires this exact string to verify the webhook
+        return "HelloSign Will Use This URL"
+    except Exception as e:
+        print(f"❌ Webhook Error: {e}")
+        return "HelloSign Will Use This URL"
+
 
