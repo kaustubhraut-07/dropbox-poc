@@ -20,12 +20,16 @@ function SignPage() {
   useEffect(() => {
     const initSigning = async () => {
       try {
-        const res = await api.post("/create-signature", null, {
-          params: {
-            email: "user@test.com",
-            name: "Test User"
+        const res = await api.post("/create-signature", {
+          email: "user@test.com",
+          name: "Test User"
+        },
+        {
+          headers: {
+            "Content-Type": "application/json"
           }
-        });
+        }
+        );
 
         if (res.data.error) {
           setError(res.data.error);
