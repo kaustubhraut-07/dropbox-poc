@@ -1,22 +1,12 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import shutil
 import json
+from typing import List
 
-# ✅ Import SDK models DIRECTLY from dropbox_sign
-from dropbox_sign import (
-    SignatureRequestCreateEmbeddedRequest,
-    SubSignatureRequestSigner,
-    ApiException,
-)
-
-# ✅ Import initialized clients from your wrapper
-from dropbox_sign_client import (
-    signature_api,
-    embedded_api,
-    CLIENT_ID,
-)
+from models import TemplateCreateRequest, SignatureRequestFromTemplate
+from dropbox_service import DropboxSignService
 
 app = FastAPI()
 
@@ -30,88 +20,99 @@ app.add_middleware(
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# -------------------------------
-# Create Signature Request
-# -------------------------------
-@app.post("/create-signature")
-def create_signature(email: str, name: str):
-    try:
-        # Use the existing PDF in uploads or a default one
-        pdf_path = os.path.join(UPLOAD_DIR, "Implementation-plan.pdf")
-        
-        if not os.path.exists(pdf_path):
-            # Fallback to any pdf in uploads if the specific one is missing
-            pdfs = [f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf")]
-            if pdfs:
-                pdf_path = os.path.join(UPLOAD_DIR, pdfs[0])
-            else:
-                return {"error": "No PDF found in uploads folder to sign. Please upload a PDF first."}
+# In-memory storage for template mapping (State Code -> Template ID)
+# In production, this would be a database.
+template_store = {}
+TEMPLATE_STORE_FILE = "template_store.json"
 
-        request = SignatureRequestCreateEmbeddedRequest(
-            title="Demo Agreement",
-            subject="Please sign this document",
-            message="Please sign this document digitally via Dropbox Sign.",
-            signers=[
-                SubSignatureRequestSigner(
-                    email_address=email,
-                    name=name,
-                    order=0,
-                )
-            ],
-            files=[open(pdf_path, "rb")],
-            client_id=CLIENT_ID,
-            test_mode=True # Set to True for testing without using credits
+def load_templates():
+    global template_store
+    if os.path.exists(TEMPLATE_STORE_FILE):
+        with open(TEMPLATE_STORE_FILE, "r") as f:
+            template_store = json.load(f)
+
+def save_templates():
+    with open(TEMPLATE_STORE_FILE, "w") as f:
+        json.dump(template_store, f)
+
+load_templates()
+
+dropbox_service = DropboxSignService()
+
+@app.post("/templates/create")
+async def create_template(
+    title: str = Form(...),
+    subject: str = Form(...),
+    message: str = Form(...),
+    state_code: str = Form(...),
+    fields_json: str = Form(...),
+    file: UploadFile = File(...)
+):
+    try:
+        # Save file temporarily
+        file_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Parse fields
+        fields = json.loads(fields_json)
+        if "fields" in fields:
+            fields = fields["fields"]
+
+        # Create template via Dropbox Sign
+        template_id = dropbox_service.create_template(
+            file_path=file_path,
+            fields=fields,
+            title=title,
+            subject=subject,
+            message=message
         )
 
-        response = signature_api.signature_request_create_embedded(request)
-        signature_id = response.signature_request.signatures[0].signature_id
-        request_id = response.signature_request.signature_request_id
-
-        sign_url_response = embedded_api.embedded_sign_url(signature_id)
+        # Store template mapping
+        template_store[state_code] = template_id
+        save_templates()
 
         return {
-            "sign_url": sign_url_response.embedded.sign_url,
-            "signature_request_id": request_id
+            "status": "success",
+            "template_id": template_id,
+            "state_code": state_code
         }
 
-    except ApiException as e:
-        print(f"ApiException: {e}")
-        return {"error": str(e)}
     except Exception as e:
-        print(f"General Exception: {e}")
-        return {"error": str(e)}
+        print(f"Error creating template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# -------------------------------
-# Get Signature Status
-# -------------------------------
-@app.get("/signature-status/{request_id}")
-def get_signature_status(request_id: str):
+@app.post("/templates/send")
+async def send_signature_request(request: SignatureRequestFromTemplate):
     try:
-        response = signature_api.signature_request_get(request_id)
+        template_id = request.template_id
+        if not template_id and request.state_code:
+            template_id = template_store.get(request.state_code)
+
+        if not template_id:
+            raise HTTPException(status_code=404, detail="Template not found for the given state code.")
+
+        response = dropbox_service.send_with_template(
+            template_id=template_id,
+            signer_email=request.signer_email,
+            signer_name=request.signer_name,
+            custom_fields=request.custom_fields
+        )
+
         return {
-            "status": response.signature_request.is_complete,
-            "details": response.signature_request.to_dict()
+            "status": "success",
+            "signature_request_id": response.signature_request_id,
+            "signing_url": response.signatures[0].signing_url if hasattr(response.signatures[0], 'signing_url') else None
         }
-    except ApiException as e:
-        return {"error": str(e)}
 
-# -------------------------------
-# Upload PDF
-# -------------------------------
-@app.post("/upload-pdf")
-def upload_pdf(file: UploadFile = File(...)):
-    file_path = f"{UPLOAD_DIR}/{file.filename}"
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        print(f"Error sending signature request: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    return {
-        "status": "uploaded",
-        "file": file.filename
-    }
+@app.get("/templates")
+async def list_templates():
+    return template_store
 
-# -------------------------------
-# Webhook
-# -------------------------------
 @app.post("/webhook")
 async def webhook(json_data: str = Form(None, alias="json")):
     try:
@@ -121,11 +122,23 @@ async def webhook(json_data: str = Form(None, alias="json")):
         event_data = json.loads(json_data)
         event_type = event_data.get("event", {}).get("event_type")
         print(f"🔔 Webhook received: {event_type}")
-        
-        # Dropbox Sign requires this exact string to verify the webhook
+
+        if event_type == "signature_request_signed":
+            sig_request = event_data.get("signature_request", {})
+            request_id = sig_request.get("signature_request_id")
+            # Extract form field values
+            responses = sig_request.get("responses", [])
+            print(f"✅ Document signed: {request_id}")
+            print(f"📝 Field values: {responses}")
+            # In production, persist this data to DB
+
         return "HelloSign Will Use This URL"
     except Exception as e:
         print(f"❌ Webhook Error: {e}")
         return "HelloSign Will Use This URL"
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
