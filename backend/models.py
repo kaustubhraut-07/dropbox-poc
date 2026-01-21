@@ -21,7 +21,7 @@ class TemplateCreateRequest(BaseModel):
     state_code: str  # e.g., "NY", "CA"
 
 class SignatureRequestFromTemplate(BaseModel):
-    template_id: str
+    template_id: Optional[str] = None
     signer_email: str
     signer_name: str
     state_code: Optional[str] = None

@@ -34,12 +34,33 @@ const AdminPage = () => {
     const canvasRef = useRef(null);
     const containerRef = useRef(null);
     const renderTaskRef = useRef(null);
+    const [signedDocs, setSignedDocs] = useState([]);
+
+    const fetchSignedDocs = async () => {
+        try {
+            const response = await axios.get('http://localhost:8000/signed-documents');
+            setSignedDocs(response.data);
+        } catch (err) {
+            console.error("Error fetching signed docs:", err);
+        }
+    };
+
+    useEffect(() => {
+        fetchSignedDocs();
+        const interval = setInterval(fetchSignedDocs, 10000); // Refresh every 10s
+        return () => clearInterval(interval);
+    }, []);
 
     const onFileChange = async (e) => {
         const selectedFile = e.target.files[0];
         if (!selectedFile) return;
 
         setFile(selectedFile);
+        console.log("File selected for template:", {
+            name: selectedFile.name,
+            size: `${(selectedFile.size / 1024).toFixed(2)} KB`,
+            type: selectedFile.type
+        });
         setPdfLoading(true);
         setFields([]); // Clear fields when new file is uploaded
 
@@ -109,19 +130,24 @@ const AdminPage = () => {
 
     const handleMouseDown = (e, index) => {
         e.stopPropagation();
-        setDraggingIndex(index);
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
         const field = fields[index];
+
+        setDraggingIndex(index);
         setDragStart({
-            x: e.clientX - (field.x * scale),
-            y: e.clientY - (field.y * scale)
+            x: e.clientX - (rect.left + field.x * scale),
+            y: e.clientY - (rect.top + field.y * scale)
         });
     };
 
     const handleMouseMove = (e) => {
         if (draggingIndex === null) return;
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
 
-        const newX = (e.clientX - dragStart.x) / scale;
-        const newY = (e.clientY - dragStart.y) / scale;
+        const newX = (e.clientX - rect.left - dragStart.x) / scale;
+        const newY = (e.clientY - rect.top - dragStart.y) / scale;
 
         const newFields = [...fields];
         newFields[draggingIndex] = {
@@ -130,6 +156,7 @@ const AdminPage = () => {
             y: Math.round(newY)
         };
         setFields(newFields);
+        console.log(`Field "${newFields[draggingIndex].name}" moved to:`, { x: Math.round(newX), y: Math.round(newY) });
     };
 
     const handleMouseUp = () => {
@@ -162,6 +189,7 @@ const AdminPage = () => {
         };
 
         setFields([...fields, newField]);
+        console.log("New field added:", newField);
     };
 
     const toggleRequired = (index) => {
@@ -186,18 +214,24 @@ const AdminPage = () => {
         if (fields.length === 0) return alert("Please add at least one field");
 
         setLoading(true);
-        const formData = new FormData();
-        formData.append('title', title);
-        formData.append('subject', subject);
-        formData.append('message', message);
-        formData.append('state_code', stateCode);
-        formData.append('fields_json', JSON.stringify({ fields }));
-        formData.append('file', file);
-
         try {
+            console.log("🚀 CREATING TEMPLATE...");
+            console.log("Metadata:", { title, subject, message, stateCode });
+            console.log("Fields:", fields);
+            console.log("File:", file.name);
+
+            const formData = new FormData();
+            formData.append('title', title);
+            formData.append('subject', subject);
+            formData.append('message', message);
+            formData.append('state_code', stateCode);
+            formData.append('fields_json', JSON.stringify({ fields }));
+            formData.append('file', file);
+
             const response = await axios.post('http://localhost:8000/templates/create', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
+            console.log("Template created successfully. Response:", response.data);
             setResult(response.data);
             alert("Template created successfully!");
         } catch (error) {
@@ -321,6 +355,40 @@ const AdminPage = () => {
 
                 {/* Main Panel: PDF Preview */}
                 <main className="lg:col-span-9 space-y-4">
+                    {/* Signed Documents Section */}
+                    {signedDocs.length > 0 && (
+                        <section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-4">
+                            <h2 className="text-lg font-bold mb-4 flex items-center">
+                                <span className="bg-green-100 text-green-600 p-1.5 rounded-lg mr-2">
+                                    <svg className="w-5 h-5" width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                </span>
+                                Signed Documents & Field Values
+                            </h2>
+                            <div className="space-y-4">
+                                {signedDocs.map((doc, idx) => (
+                                    <div key={idx} className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                                        <div className="flex justify-between items-start mb-3">
+                                            <div>
+                                                <p className="text-sm font-black text-gray-900">{doc.signer_name}</p>
+                                                <p className="text-xs text-gray-500">{doc.signer_email}</p>
+                                            </div>
+                                            <span className="text-[10px] font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-full uppercase">
+                                                ID: {doc.signature_request_id.substring(0, 8)}...
+                                            </span>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                                            {doc.responses.map((resp, rIdx) => (
+                                                <div key={rIdx} className="bg-white p-2 rounded-lg border border-gray-100 flex flex-col">
+                                                    <span className="text-[9px] font-black text-gray-400 uppercase tracking-tighter">{resp.name || resp.api_id}</span>
+                                                    <span className="text-xs font-bold text-indigo-700">{resp.value || "(empty)"}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </section>
+                    )}
                     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                         <div className="bg-gray-900 p-4 flex flex-col sm:flex-row justify-between items-center gap-4">
                             <div className="flex items-center space-x-6">

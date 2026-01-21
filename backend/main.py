@@ -21,19 +21,29 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # In-memory storage for template mapping (State Code -> Template ID)
-# In production, this would be a database.
 template_store = {}
 TEMPLATE_STORE_FILE = "template_store.json"
 
+# In-memory storage for signed documents
+signed_documents = []
+SIGNED_DOCS_FILE = "signed_documents.json"
+
 def load_templates():
-    global template_store
+    global template_store, signed_documents
     if os.path.exists(TEMPLATE_STORE_FILE):
         with open(TEMPLATE_STORE_FILE, "r") as f:
             template_store = json.load(f)
+    if os.path.exists(SIGNED_DOCS_FILE):
+        with open(SIGNED_DOCS_FILE, "r") as f:
+            signed_documents = json.load(f)
 
 def save_templates():
     with open(TEMPLATE_STORE_FILE, "w") as f:
         json.dump(template_store, f)
+
+def save_signed_docs():
+    with open(SIGNED_DOCS_FILE, "w") as f:
+        json.dump(signed_documents, f)
 
 load_templates()
 
@@ -102,16 +112,29 @@ async def send_signature_request(request: SignatureRequestFromTemplate):
         return {
             "status": "success",
             "signature_request_id": response.signature_request_id,
-            "signing_url": response.signatures[0].signing_url if hasattr(response.signatures[0], 'signing_url') else None
+            "signing_url": response.signing_url if hasattr(response, 'signing_url') else None
         }
 
     except Exception as e:
         print(f"Error sending signature request: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/signature-request/{id}")
+async def get_signature_request(id: str):
+    try:
+        response = dropbox_service.get_signature_request(id)
+        return response
+    except Exception as e:
+        print(f"Error fetching signature request: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/templates")
 async def list_templates():
     return template_store
+
+@app.get("/signed-documents")
+async def list_signed_documents():
+    return signed_documents
 
 @app.post("/webhook")
 async def webhook(json_data: str = Form(None, alias="json")):
@@ -129,8 +152,24 @@ async def webhook(json_data: str = Form(None, alias="json")):
             # Extract form field values
             responses = sig_request.get("responses", [])
             print(f"✅ Document signed: {request_id}")
-            print(f"📝 Field values: {responses}")
-            # In production, persist this data to DB
+            
+            doc_data = {
+                "signature_request_id": request_id,
+                "signer_email": sig_request.get("signatures", [{}])[0].get("signer_email_address"),
+                "signer_name": sig_request.get("signatures", [{}])[0].get("signer_name"),
+                "responses": responses,
+                "signed_at": sig_request.get("signatures", [{}])[0].get("signed_at")
+            }
+            
+            # Check if already exists to avoid duplicates
+            if not any(d["signature_request_id"] == request_id for d in signed_documents):
+                signed_documents.append(doc_data)
+                save_signed_docs()
+                print(f"💾 Saved signed document data for: {request_id}")
+
+            print("📝 FIELD VALUES (RESPONSES):")
+            for resp in responses:
+                print(f"   - {resp.get('name')} ({resp.get('api_id')}): {resp.get('value')}")
 
         return "HelloSign Will Use This URL"
     except Exception as e:

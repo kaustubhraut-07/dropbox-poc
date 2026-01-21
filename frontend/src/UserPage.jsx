@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import HelloSign from 'hellosign-embedded';
+
+const clientId = import.meta.env.VITE_DROPBOX_SIGN_CLIENT_ID || "18cf67e16badba297d5924f7f457477d";
 
 const UserPage = () => {
     const [email, setEmail] = useState('');
@@ -9,10 +12,15 @@ const UserPage = () => {
     const [loading, setLoading] = useState(false);
     const [signUrl, setSignUrl] = useState(null);
 
+    const client = new HelloSign({
+        clientId: clientId
+    });
+
     useEffect(() => {
         const fetchTemplates = async () => {
             try {
                 const response = await axios.get('http://localhost:8000/templates');
+                console.log("📦 Templates loaded from backend store:", response.data);
                 setTemplates(response.data);
                 if (Object.keys(response.data).length > 0) {
                     setStateCode(Object.keys(response.data)[0]);
@@ -33,10 +41,34 @@ const UserPage = () => {
                 signer_name: name,
                 state_code: stateCode
             });
+            console.log("Signature request response:", response.data);
 
             if (response.data.signing_url) {
                 setSignUrl(response.data.signing_url);
-                window.open(response.data.signing_url, '_blank');
+
+                client.open(response.data.signing_url, {
+                    testMode: true,
+                    skipDomainVerification: true,
+                    allowCancel: true,
+                    message: "Please sign the document to complete the process."
+                });
+
+                client.on('sign', async (data) => {
+                    console.log("Document signed!", data);
+                    alert("Document signed successfully!");
+
+                    // Fetch and log the field values (responses)
+                    try {
+                        const details = await axios.get(`http://localhost:8000/signature-request/${data.signature_request_id}`);
+                        console.log("📝 SIGNED FIELD VALUES:", details.data.responses);
+                    } catch (err) {
+                        console.error("Error fetching signed data:", err);
+                    }
+                });
+
+                client.on('error', (data) => {
+                    console.error("Signing error", data);
+                });
             } else {
                 alert("Signature request sent! Please check your email for the signing link.");
             }
@@ -59,11 +91,11 @@ const UserPage = () => {
 
                 <form onSubmit={handleSend} className="p-8 space-y-6">
                     <div>
-                        <label className="block text-sm font-bold text-gray-700 uppercase tracking-wider">Select State / Template</label>
+                        <label className="block text-sm font-bold text-black-700 uppercase tracking-wider">Select State / Template</label>
                         <select
                             value={stateCode}
                             onChange={(e) => setStateCode(e.target.value)}
-                            className="mt-2 block w-full border-2 border-gray-200 rounded-xl p-3 focus:border-indigo-500 focus:ring-0 transition-colors"
+                            className="mt-2 block w-full border-2 border-gray-200 rounded-xl text-black p-3 focus:border-indigo-500 focus:ring-0 transition-colors"
                             required
                         >
                             {Object.keys(templates).length > 0 ? (
@@ -77,24 +109,24 @@ const UserPage = () => {
                     </div>
 
                     <div>
-                        <label className="block text-sm font-bold text-gray-700 uppercase tracking-wider">Full Name</label>
+                        <label className="block text-sm font-bold text-black uppercase tracking-wider">Full Name</label>
                         <input
                             type="text"
                             value={name}
                             onChange={(e) => setName(e.target.value)}
-                            className="mt-2 block w-full border-2 border-gray-200 rounded-xl p-3 focus:border-indigo-500 focus:ring-0 transition-colors"
+                            className="mt-2 block w-full border-2 border-black text-black rounded-xl p-3 focus:border-indigo-500 focus:ring-0 transition-colors"
                             placeholder="John Doe"
                             required
                         />
                     </div>
 
                     <div>
-                        <label className="block text-sm font-bold text-gray-700 uppercase tracking-wider">Email Address</label>
+                        <label className="block text-sm font-bold text-black uppercase tracking-wider">Email Address</label>
                         <input
                             type="email"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
-                            className="mt-2 block w-full border-2 border-gray-200 rounded-xl p-3 focus:border-indigo-500 focus:ring-0 transition-colors"
+                            className="mt-2 block w-full border-2 border-black text-black rounded-xl p-3 focus:border-indigo-500 focus:ring-0 transition-colors"
                             placeholder="john@example.com"
                             required
                         />
